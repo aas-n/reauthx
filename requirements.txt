@@ -1,0 +1,6 @@
+# reauthx = krbrelayx fork; same dependencies as krbrelayx, nothing extra.
+#   coerce_name.py : stdlib only
+#   patchcheck.py  : impacket only
+impacket
+ldap3
+dnspython
