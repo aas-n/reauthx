@@ -1,5 +1,17 @@
-build/
-venv/
-*.egg-info
-dist/
+# python
+__pycache__/
 *.pyc
+build/
+dist/
+*.egg-info
+venv/
+.venv/
+
+# runtime output / loot - never commit captured material
+*.ccache
+*.kirbi
+*.log
+*.sam
+*.ntds
+*.ntds.*
+*.secrets
