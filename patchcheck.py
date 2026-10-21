@@ -23,7 +23,7 @@ import sys
 
 from impacket.smbconnection import SMBConnection, SessionError
 from impacket.dcerpc.v5 import transport, rrp
-from impacket.smb3structs import SMB2_SESSION_SETUP
+from impacket.smb3structs import SMB2_SESSION_SETUP, SMB2_DIALECT_30, SMB2_NEGOTIATE_SIGNING_REQUIRED
 from impacket.smb3 import SMB2SessionSetup, SMB2SessionSetup_Response
 from impacket.spnego import SPNEGO_NegTokenInit, SPNEGO_NegTokenResp, TypesMech
 from impacket import ntlm
@@ -117,6 +117,24 @@ def read_ubr(smb):
     ubr = rrp.hBaseRegQueryValue(dce, hkey, "UBR")[1]
     dce.disconnect()
     return ubr
+
+
+def signing_required(smb):
+    """Whether the server REQUIRES SMB signing (not merely enables it).
+
+    impacket force-sets RequireSigning=True for any SMB 3.1.1 negotiation, so
+    isSigningRequired() is a false positive on 3.x hosts that only enable (but
+    do not require) signing. For SMB 3.0+ read the real negotiated
+    ServerSecurityMode instead (the fix nxc uses); fall back to
+    isSigningRequired() for SMBv1 / SMB 2.0.2 / 2.1.
+    """
+    try:
+        conn = smb._SMBConnection._Connection
+        if conn["Dialect"] >= SMB2_DIALECT_30:
+            return bool(conn["ServerSecurityMode"] & SMB2_NEGOTIATE_SIGNING_REQUIRED)
+    except Exception:
+        pass
+    return smb.isSigningRequired()
 
 
 # ---- #4 test: cross-user re-auth (adapted from test_A_reauth_swap.py) ----
@@ -282,7 +300,7 @@ def main():
         sys.exit(f"[-] login failed: {e}")
 
     major, minor, build = smb.getServerOSMajor(), smb.getServerOSMinor(), smb.getServerOSBuild()
-    signing = smb.isSigningRequired()
+    signing = signing_required(smb)
     name = smb.getServerName()
     key = (major, minor, build)
     dc = is_dc(target)
