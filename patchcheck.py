@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""patchcheck.py - SCAN: locate a target across the 4 patches of the chain and recommend the exploit mode.
+"""patchcheck.py - SCAN: locate a target across the patch chain and recommend the exploit mode.
 
 Read-only by default (reads the UBR via RemoteRegistry; a low-privilege account is enough - same method
 as nxc). With --probe (a DIFFERENT second account), it also tests patch #4 (cross-user re-auth).
@@ -9,9 +9,11 @@ Examples:
   patchcheck.py AD.LOCAL/bob:Pass1@10.0.0.5                       # passive scan (1 account)
   patchcheck.py AD.LOCAL/bob:Pass1@10.0.0.5 --probe alice:Pass2   # + test #4 (2nd DIFFERENT account)
 
-The 4 patches: #1 CVE-2025-33073 . #2 CVE-2025-58726 . #3 loopback-signing (Mar 2026, 24294/26128)
-. #4 same-user re-auth (Sep 2026). #1/#2/#3 are inferred from the UBR (MSRC tables); #4 is a feature
-flag, not readable from the UBR -> tested only via --probe.
+The checks: #1 CVE-2025-33073 . #2 CVE-2025-58726 . #4 same-user re-auth (Sep 2026). #1/#2 are inferred
+from the UBR (MSRC tables); #4 is a feature flag, not readable from the UBR -> tested only via --probe.
+The Mar-2026 loopback-signing fix (24294/26128) is deliberately not checked here: it never changes the
+RCE verdict, and build 26100 spans two UBR trains (client 24H2 vs Server 2025) that one threshold cannot
+tell apart. The re-auth bypass is used regardless, so lean on --probe.
 """
 import argparse
 import binascii
@@ -39,18 +41,11 @@ P2_58726 = {
     (10, 0, 20348): 4294, (10, 0, 22621): 6060, (10, 0, 25398): 1913, (10, 0, 26100): 6899,
     (10, 0, 26200): 6899,
 }
-P3_LOOPSIGN = {   # Mar 2026 (CVE-2026-24294 / 26128) - via MSRC CVRF API, GA value per build
-    (6, 2, 9200): 25973, (6, 3, 9600): 23074,
-    (10, 0, 14393): 8957, (10, 0, 17763): 8511, (10, 0, 19044): 7058, (10, 0, 19045): 7058,
-    (10, 0, 20348): 4830, (10, 0, 22631): 6783, (10, 0, 25398): 2207,
-    (10, 0, 26100): 7979, (10, 0, 26200): 7979, (10, 0, 28000): 1719,
-}
 P4_REAUTH = {}   # same-user re-auth (Sep 2026) - feature flag, no reliable UBR -> --probe
 
 PATCHES = [
     ("#1", "CVE-2025-33073 (client mrxsmb)", P1_33073),
     ("#2", "CVE-2025-58726 (loopback-IP / GhostSPN)", P2_58726),
-    ("#3", "loopback-signing Mar2026 (24294/26128)", P3_LOOPSIGN),
     ("#4", "same-user re-auth (Sep2026, flag)", P4_REAUTH),
 ]
 
@@ -74,7 +69,6 @@ def col(code, s):
 LABEL = {
     "#1": "CVE-2025-33073         client reflection (CMTI)",
     "#2": "CVE-2025-58726         loopback source-IP (GhostSPN)",
-    "#3": "CVE-2026-24294/26128   loopback signing (Mar 2026)",
     "#4": "same-user re-auth      (Sep 2026, feature flag)",
 }
 _STAT = {"MISSING": ("32", "absent"), "PATCHED": ("2", "patched"), "UNKNOWN": ("33", "unknown")}
@@ -198,23 +192,21 @@ def recommend(st, signing_required, is_dc):
         return pack("fully unpatched (pre-33073)", "RCE", "CMTI or Unicode", "remote")
     if st["#2"] == "MISSING":
         return pack("33073 patched, 58726 absent", "RCE", "Unicode (CMTI dead)", "remote")
-    if st["#3"] == "MISSING":
-        return pack("33073+58726 patched, loopback-signing absent", "LPE",
-                    "Unicode", "local forwarder (58726)")
-    if st["#3"] == "PATCHED" and st["#4"] == "MISSING":
-        return pack("target window Mar->Sep 2026 (confirmed by probe)", "LPE",
+    # #1 and #2 patched from here: RCE is gone, the signing bypass is what keeps a relay alive.
+    if st["#4"] == "MISSING":
+        return pack("33073+58726 patched, same-user re-auth absent", "LPE",
                     "Unicode", "local forwarder (58726)",
-                    signing="re-auth signing bypass required (loopback signing forced)")
-    if st["#3"] == "PATCHED" and st["#4"] == "UNKNOWN":
-        return pack("likely target window Mar->Sep 2026 (#4 unconfirmed)", "LPE",
+                    signing="re-auth signing bypass required")
+    if st["#4"] == "UNKNOWN":
+        return pack("likely still open (#4 unconfirmed)", "LPE",
                     "Unicode", "local forwarder (58726)",
-                    signing="re-auth signing bypass required (loopback signing forced)",
+                    signing="re-auth signing bypass required",
                     note="re-run with --probe (2nd account) to confirm #4")
     if st["#4"] == "PATCHED":
         return ("chain closed (Sep-2026 same-user re-auth present)", "CLOSED",
                 [("reason", "the same-user check blocks the identity swap")])
-    return ("undetermined (#3/#4 not mapped for this build)", "?",
-            [("hint", "read the raw UBR, or use --probe")])
+    return ("undetermined (#4 not confirmed for this build)", "?",
+            [("hint", "use --probe")])
 
 
 def parse_identity(ident):
@@ -237,7 +229,7 @@ def is_dc(target, timeout=3):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="reflect_relay - SCAN: locate the target across the 4 patches (UBR) + recommend the exploit mode.",
+        description="reflect_relay - SCAN: locate the target across the patch chain (UBR) + recommend the exploit mode.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
